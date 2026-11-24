@@ -8,6 +8,9 @@ import edge_tts
 import eng_to_ipa as ipa
 import streamlit as st
 from faster_whisper import WhisperModel
+import io
+import wave
+import numpy as np
 
 VOICES = {
     "Andrew (Male - Conversational)": "en-US-AndrewMultilingualNeural",
@@ -80,16 +83,34 @@ def evaluate_pronunciation(target: str, transcript: str):
 
 
 def transcribe_wav_bytes(model: WhisperModel, wav_bytes: bytes) -> str:
-    tmp_path = None
-    try:
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-            tmp.write(wav_bytes)
-            tmp_path = tmp.name
-        segments, _ = model.transcribe(tmp_path, language="en", beam_size=5)
-        return " ".join(seg.text.strip() for seg in segments).strip()
-    finally:
-        if tmp_path and os.path.exists(tmp_path):
-            os.remove(tmp_path)
+    """Decode WAV bytes directly to a 16 kHz float32 NumPy array (bypasses PyAV)."""
+    with wave.open(io.BytesIO(wav_bytes), "rb") as wf:
+        n_channels = wf.getnchannels()
+        sampwidth = wf.getsampwidth()
+        framerate = wf.getframerate()
+        raw_frames = wf.readframes(wf.getnframes())
+
+    if sampwidth == 2:
+        audio = np.frombuffer(raw_frames, dtype=np.int16).astype(np.float32) / 32768.0
+    elif sampwidth == 4:
+        audio = np.frombuffer(raw_frames, dtype=np.int32).astype(np.float32) / 2147483648.0
+    else:
+        raise ValueError(f"Unsupported WAV sample width: {sampwidth} bytes")
+
+    if n_channels > 1:
+        audio = audio.reshape(-1, n_channels).mean(axis=1)
+
+    # Resample to 16 kHz (Whisper's native sample rate)
+    if framerate != 16000:
+        target_len = int(len(audio) * 16000 / framerate)
+        audio = np.interp(
+            np.linspace(0, len(audio) - 1, target_len),
+            np.arange(len(audio)),
+            audio,
+        ).astype(np.float32)
+
+    segments, _ = model.transcribe(audio, language="en", beam_size=5)
+    return " ".join(seg.text.strip() for seg in segments).strip()
 
 
 # --- UI Setup ---
