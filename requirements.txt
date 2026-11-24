@@ -1,0 +1,4 @@
+streamlit
+edge-tts
+eng_to_ipa
+faster-whisper
